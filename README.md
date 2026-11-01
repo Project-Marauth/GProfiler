@@ -1,5 +1,14 @@
 # 📊 GProfiler
 
+> This is the Marauth fork of [ZARP-Gaming/GProfiler](https://github.com/ZARP-Gaming/GProfiler), licensed under GPL-3.0 like the original. Run `git merge upstream/main` to take upstream changes.
+
+## 🧭 Marauth changes
+
+- **Network:** every message sent through `marauth.net` gets its own row instead of one `marauth.net.msg` row, with the code that sent it, what the message costs on the wire across all recipients, and its heaviest frame. Selecting a sent message breaks its largest payload down by argument and lists its senders. Rows in `GProfiler.Config.NetDetail` are split by an argument, so `entity.syncvar` shows each variable.
+- **Hooks:** module and schema hooks show their owner and their real handler instead of the shared dispatcher in `marauth.util:AttachHooks`, `GM:` functions are timed too, and **By Module** adds up everything each owner costs. **Time (Longest)** is now the slowest single call.
+- **Spike Frames:** while Network or Hooks is profiling, any frame over the limits in `sh_config.lua` is logged with what ran in it. Select one to read the breakdown. A spike with nothing listed points away from hooks and net messages, towards timers, physics, garbage collection or the engine.
+- **Safety:** hook priorities from Srlion's hook library survive profiling, hooks added under an entity or panel are no longer dropped, and results of any size reach the client.
+
 ## 📑 Contents
 
 - [Overview Tab](#-overview-tab)
