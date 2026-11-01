@@ -388,9 +388,52 @@ local function FindIncomingHandler(name)
 	return debug.getinfo(stored[1], "S")
 end
 
+local function CountLogicalIncoming(name, rowName, bits)
+	local row = GetRow(GProfiler.Net.ProfileData.Inc, rowName)
+	row.Logical = true
+	CountIncoming(row, bits)
+	SetRowSource(row, FindIncomingHandler(name))
+
+	Net.IncomingRow = row
+	Net.IncomingName = rowName
+	Spikes.Add("in", rowName, 0, bits)
+end
+
+--- The arguments of a received message only exist once its payload is decoded, so channels in `GProfiler.Config.NetDetail` are counted here rather than when their name is read.
+local function FinishDetailIncoming(decoded)
+	local name = Net.DetailIncomingName
+	if not name then return end
+	Net.DetailIncomingName = nil
+
+	local rowName = istable(decoded) and GetRowName(name, decoded) or name
+	CountLogicalIncoming(name, rowName, Net.DetailIncomingBits)
+end
+
+local function DetourDecode()
+	local original = sfs and sfs.decode
+	if not original then return end
+
+	local decode = function(raw)
+		local decoded, reason = original(raw)
+		FinishDetailIncoming(decoded)
+		return decoded, reason
+	end
+
+	sfs.decode = decode
+	Net.DecodeDetour = { Original = original, Decode = decode }
+end
+
+local function RestoreDecode()
+	local detour = Net.DecodeDetour
+	Net.DecodeDetour = nil
+	if detour and sfs.decode == detour.Decode then sfs.decode = detour.Original end
+end
+
 local function DetourIncoming()
 	GProfiler.Net.OriginalIncoming = GProfiler.Net.OriginalIncoming or net.Incoming
 	GProfiler.Net.OriginalReadString = GProfiler.Net.OriginalReadString or net.ReadString
+
+	DetourDecode()
 
 	function net.ReadString()
 		local value = GProfiler.Net.OriginalReadString()
@@ -399,14 +442,13 @@ local function DetourIncoming()
 		if bits then
 			Net.PendingIncomingBits = nil
 
-			local row = GetRow(GProfiler.Net.ProfileData.Inc, value)
-			row.Logical = true
-			CountIncoming(row, bits)
-			SetRowSource(row, FindIncomingHandler(value))
-
-			Net.IncomingRow = row
-			Net.IncomingName = value
-			Spikes.Add("in", value, 0, bits)
+			local detail = GProfiler.Config.NetDetail
+			if detail and detail[value] and Net.DecodeDetour then
+				Net.DetailIncomingName = value
+				Net.DetailIncomingBits = bits
+			else
+				CountLogicalIncoming(value, value, bits)
+			end
 		end
 
 		return value
@@ -427,6 +469,7 @@ local function DetourIncoming()
 		Net.IncomingRow = nil
 		Net.IncomingName = nil
 		Net.PendingIncomingBits = nil
+		Net.DetailIncomingName = nil
 
 		if IsMultiplexed(nameLower) then
 			Net.PendingIncomingBits = len
@@ -447,6 +490,8 @@ local function DetourIncoming()
 		func(len, client)
 		local deltaTime = SysTime() - start
 
+		FinishDetailIncoming()
+
 		row = row or Net.IncomingRow
 		rowName = rowName or Net.IncomingName
 		Net.PendingIncomingBits = nil
@@ -463,6 +508,7 @@ end
 local function RestoreIncoming()
 	net.Incoming = GProfiler.Net.OriginalIncoming
 	net.ReadString = GProfiler.Net.OriginalReadString
+	RestoreDecode()
 end
 
 local function StartDetour()
