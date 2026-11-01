@@ -45,7 +45,7 @@ function GProfiler.Hooks.DoTab(Base, Outer)
 
 	local left, Source = GProfiler.Utils.VSplitPanel(Base, GProfiler.GetScaledSize(10), "hook_lr", 0.65)
 	local Results, Receivers = GProfiler.Utils.HSplitPanel(left, GProfiler.GetScaledSize(10), "hook_l_bt", 0.65)
-	local ClientHooks, ServerHooks = GProfiler.Utils.VSplitPanel(Receivers, GProfiler.GetScaledSize(10), "hook_lb_lr", 0.5)
+	local OwnersPanel, SpikesPanel = GProfiler.Utils.VSplitPanel(Receivers, GProfiler.GetScaledSize(10), "hook_lb_lr", 0.5)
 
 	local SourceHeader = vgui.Create("DLabel", Source)
 	SourceHeader:SetFont("GProfiler.Inter24")
@@ -75,20 +75,74 @@ function GProfiler.Hooks.DoTab(Base, Outer)
 	end
 
 	local Header = GProfiler.Utils.SetupHeader(Results, "Profiler Results", nil, true)
-	local ResultsList = GProfiler.Utils.CreateList(Results, Header, {"Hook", "Count", "Time (Total)", "Time (Avg)", "Time (Longest)"}) -- FIXME: longest is just a complete lie, yeah.. alright sure
+	local ResultsList = GProfiler.Utils.CreateList(Results, Header, {"Hook", "Count", "Time (Total)", "Time (Avg)", "Time (Longest)"})
+	local OwnersHeader = GProfiler.Utils.SetupHeader(OwnersPanel, "By Module", nil, true)
+	local OwnersList = GProfiler.Utils.CreateList(OwnersPanel, OwnersHeader, {"Owner", "Hooks", "Calls", "Time (Total)", "Time (Longest)"})
+	GProfiler.Utils.WidenNameColumn(ResultsList)
+	GProfiler.Utils.WidenNameColumn(OwnersList)
+
+	OwnersPanel.OnHandleMoved = function()
+		OwnersHeader:SetWide(OwnersPanel:GetWide())
+		OwnersList:SetSize(OwnersPanel:GetWide(), OwnersPanel:GetTall() - OwnersHeader:GetTall())
+		OwnersList:SetPos(0, OwnersHeader:GetTall())
+	end
+
+	local function GetDisplayRealm()
+		return Hooks.Realm == "Both" and "Client" or Hooks.Realm
+	end
+
+	local function PopulateOwners(realmData)
+		OwnersList:Clear()
+
+		local owners = {}
+		for _, v in pairs(realmData) do
+			local key = v.o or "other"
+			local owner = owners[key]
+			if not owner then
+				owner = { Hooks = 0, Calls = 0, Total = 0, Longest = 0 }
+				owners[key] = owner
+			end
+
+			owner.Hooks = owner.Hooks + 1
+			owner.Calls = owner.Calls + v.c
+			owner.Total = owner.Total + v.t
+			owner.Longest = math.max(owner.Longest, v.m or 0)
+		end
+
+		for name, owner in pairs(owners) do
+			GProfiler.Utils.AddSortedLine(OwnersList, {
+				name,
+				owner.Hooks,
+				owner.Calls,
+				{ GProfiler.Utils.FormatTime(owner.Total), owner.Total },
+				{ GProfiler.Utils.FormatTime(owner.Longest), owner.Longest }
+			})
+		end
+
+		OwnersList:SortByColumn(4, true)
+	end
 
 	local function PopulateResults()
 		if not IsValid(ResultsList) then return end
 
-		local displayRealm = Hooks.Realm == "Both" and "Client" or Hooks.Realm
-		local realmData = HooksStore:GetData(displayRealm) or {}
+		local realmData = HooksStore:GetData(GetDisplayRealm()) or {}
 
 		ResultsList:Clear()
 
 		for k, v in pairs(realmData) do
-			local row = ResultsList:AddLine(string.format("%s (%s)", v.r, v.h), v.c, v.t, v.c > 0 and v.t / v.c or 0, v.t)
+			local average = v.c > 0 and v.t / v.c or 0
+			local row = GProfiler.Utils.AddSortedLine(ResultsList, {
+				v.d or string.format("%s (%s)", v.r, v.h),
+				v.c,
+				{ GProfiler.Utils.FormatTime(v.t), v.t },
+				{ GProfiler.Utils.FormatTime(average), average },
+				{ GProfiler.Utils.FormatTime(v.m), v.m or 0 }
+			})
 			row.HookData = v
 		end
+
+		ResultsList:SortByColumn(3, true)
+		PopulateOwners(realmData)
 	end
 	GProfiler.Hooks.RefreshUI = PopulateResults
 	PopulateResults()
@@ -122,122 +176,10 @@ function GProfiler.Hooks.DoTab(Base, Outer)
 		end
 	end
 
-	local function CreateHookList(Parent, Receivers, Title)
-		Parent:Clear()
-
-		local HeaderPanel = vgui.Create("DPanel", Parent)
-		HeaderPanel:SetSize(Parent:GetWide(), GProfiler.GetScaledSize(50))
-		HeaderPanel.Paint = function(s, w, h)
-			GProfiler.RNDX.DrawScaled(8, 0, 0, w, h, Color(34, 77, 122), GProfiler.RNDX.NO_BL + GProfiler.RNDX.NO_BR)
-			draw.SimpleText(Title, "GProfiler.Inter28", GProfiler.GetScaledSize(10), h / 2, GProfiler.SyntaxColors.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-		end
-
-		local RefreshButton = vgui.Create("DButton", HeaderPanel)
-		RefreshButton:SetSize(GProfiler.GetScaledSize(80), GProfiler.GetScaledSize(30))
-		RefreshButton:SetPos(HeaderPanel:GetWide() - RefreshButton:GetWide() - GProfiler.GetScaledSize(10), (HeaderPanel:GetTall() - RefreshButton:GetTall()) / 2)
-		RefreshButton:SetText("Refresh")
-		RefreshButton:SetFont("GProfiler.Inter24")
-		RefreshButton:SetTextColor(Color(0,0,0,0))
-		RefreshButton.Paint = function(s, w, h)
-			GProfiler.RNDX.DrawScaled(4, 0, 0, w, h, Color(255, 255, 255, 20))
-			if s:IsHovered() then
-				GProfiler.RNDX.DrawScaled(4, 0, 0, w, h, Color(255, 255, 255, 20))
-			end
-			draw.SimpleText("Refresh", "GProfiler.Inter24", w / 2, h / 2, GProfiler.SyntaxColors.text, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-		end
-		RefreshButton.DoClick = function()
-			net.Start("GProfiler_Hooks_HookTbl")
-			net.SendToServer()
-		end
-
-		local List = vgui.Create("DPanelList", Parent)
-		List:SetSize(Parent:GetWide(), Parent:GetTall() - HeaderPanel:GetTall())
-		List:SetPos(0, HeaderPanel:GetTall())
-		List:EnableVerticalScrollbar()
-
-		local ScrollBar = List.VBar
-		ScrollBar:SetWide(GProfiler.GetScaledSize(12))
-		ScrollBar:SetHideButtons(true)
-		ScrollBar.Paint = function(s, w, h)
-			GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, Color(255, 255, 255, 10))
-		end
-		ScrollBar.btnGrip.Paint = function(s, w, h)
-			GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, Color(255, 255, 255, 20))
-		end
-
-		for k, Receiver in ipairs(Receivers) do
-			local i = k
-			local Item = vgui.Create("DButton", List)
-			Item:SetSize(List:GetWide(), GProfiler.GetScaledSize(30))
-			Item:SetText(Receiver.Name)
-			Item:SetFont("GProfiler.Inter24")
-			Item:SizeToContentsY()
-			Item:SetTall(Item:GetTall() + GProfiler.GetScaledSize(10))
-			Item:SetContentAlignment(1)
-			Item:SetTextColor(Color(0,0,0,0))
-			Item.Paint = function(s, w, h)
-				if i % 2 == 0 then
-					GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, Color(255, 255, 255, 10))
-				else
-					GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, Color(255, 255, 255, 2))
-				end
-
-				if s:IsHovered() then
-					GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, Color(255, 255, 255, 20))
-				end
-
-				draw.SimpleText(Receiver.Name, "GProfiler.Inter24", GProfiler.GetScaledSize(10), h / 2, GProfiler.SyntaxColors.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-				draw.SimpleText(Receiver.Hook, "GProfiler.Inter24", w - GProfiler.GetScaledSize(10), h / 2, GProfiler.SyntaxColors.comment, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
-			end
-
-			List:AddItem(Item)
-		end
-
-		Parent.OnHandleMoved = function()
-			HeaderPanel:SetSize(Parent:GetWide(), HeaderPanel:GetTall())
-			RefreshButton:SetPos(HeaderPanel:GetWide() - RefreshButton:GetWide() - GProfiler.GetScaledSize(10), (HeaderPanel:GetTall() - RefreshButton:GetTall()) / 2)
-			List:SetSize(Parent:GetWide(), Parent:GetTall() - HeaderPanel:GetTall())
-			List:SetPos(0, HeaderPanel:GetTall())
-			for k, v in pairs(List:GetItems()) do
-				v:SetSize(List:GetWide(), v:GetTall())
-			end
-		end
-	end
-
-	local CLHooks = {}
-	local SVHooks = {}
-
-	for hookName, hookReceivers in pairs(hook.GetTable()) do
-		for receiverName, _ in pairs(hookReceivers) do
-			table.insert(CLHooks, {
-				Name = tostring(receiverName or ""),
-				Hook = hookName
-			})
-		end
-	end
-
-	local clr = CreateHookList(ClientHooks, CLHooks, string.format("Client Hooks (%d)", #CLHooks))
-
-	net.Receive("GProfiler_Hooks_HookTbl", function(len, ply)
-		if not GProfiler.Access.HasAccess(ply) then return end
-
-		SVHooks = {}
-		for i = 1, net.ReadUInt(15) do
-			local hookName = net.ReadString()
-			for j = 1, net.ReadUInt(10) do
-				local receiverName = net.ReadString()
-				table.insert(SVHooks, {
-					Name = tostring(receiverName or ""),
-					Hook = hookName
-				})
-			end
-		end
-
-		local svr = CreateHookList(ServerHooks, SVHooks, string.format("Server Hooks (%d)", #SVHooks))
+	GProfiler.Utils.CreateSpikeList(SpikesPanel, GetDisplayRealm, function(spike)
+		SourceHeader:SetText("Spike frame")
+		RichText:SetText(GProfiler.Utils.DescribeSpike(spike))
 	end)
-
-	net.Start("GProfiler_Hooks_HookTbl")
-	net.SendToServer()
 
 	Results.OnHandleMoved = function()
 		ResultsList:SetSize(Results:GetWide(), Results:GetTall() - Header:GetTall())
@@ -252,19 +194,7 @@ GProfiler.Menu.RegisterTab("Hooks", "gprofiler/hooks.png", 1, Hooks.DoTab, funct
 	return GProfiler.TimeRunning(timer.StartTime, timer.EndTime, timer.ProfileActive), timer.ProfileActive
 end)
 
-net.Receive("GProfiler_Hooks_SendData", function()
-	local Data = {}
-	for i = 1, net.ReadUInt(20) do
-		table.insert(Data, {
-			r = net.ReadString(),
-			h = net.ReadString(),
-			c = net.ReadUInt(32),
-			t = net.ReadFloat(),
-			Source = net.ReadString(),
-			Lines = {net.ReadUInt(16), net.ReadUInt(16)}
-		})
-	end
-
-	HooksStore:SetData("Server", Data)
+GProfiler.Utils.OnLarge("Hooks", function(data)
+	HooksStore:SetData("Server", data)
 	if Hooks.RefreshUI then Hooks.RefreshUI() end
 end)
