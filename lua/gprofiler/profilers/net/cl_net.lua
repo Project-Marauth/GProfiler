@@ -5,19 +5,34 @@ Net.Realm = Net.Realm or "Client"
 
 local NetStore = GProfiler.Profilers.GetStore("Networking")
 
-local function FormatBits(bits)
-	if not bits or bits < 0.01 then return "0 Bytes" end
-	if not isnumber(bits) then return "oh fiddlesticks, what now?" end
+local FormatBits = GProfiler.Utils.FormatBits
+local FormatTime = GProfiler.Utils.FormatTime
 
-	if bits < 8 then return math.Round(bits, 2) .. (bits == 1 and " Bit" or " Bits") end
+local RESULT_COLUMNS = {"Name", "Count", "Size (Largest)", "Size (Total)", "Wire (Total)", "Peak / Frame", "Time (Total)", "Time (Longest)"}
+local WIRE_COLUMN = 5
 
-	local bytes = bits / 8
-	if bytes < 1024 then return math.Round(bytes, 2) .. (bytes == 1 and " Byte" or " Bytes") end
+local function GetDisplayRealm()
+	return Net.Realm == "Both" and "Client" or Net.Realm
+end
 
-	local kb = bytes / 1024
-	if kb < 1024 then return math.Round(kb, 2) .. " KB" end
-	local mb = kb / 1024
-	return math.Round(mb, 2) .. " MB"
+local function AddResultLine(List, name, data)
+	local maxSize = data.MaxSize or data[2] or 0
+	local totalSize = data.TotalSize or data[3] or 0
+	local totalTime = data.TotalTime or data[7] or 0
+	local longestTime = data.LongestTime or data[8] or 0
+	local wire = data.Wire or 0
+	local peak = data.Peak or 0
+
+	GProfiler.Utils.AddSortedLine(List, {
+		name,
+		data.Count or data[1] or 0,
+		{ FormatBits(maxSize), maxSize },
+		{ FormatBits(totalSize), totalSize },
+		{ FormatBits(wire), wire },
+		{ FormatBits(peak), peak },
+		{ FormatTime(totalTime), totalTime },
+		{ FormatTime(longestTime), longestTime }
+	})
 end
 
 function GProfiler.Net.DoTab(Base, Outer)
@@ -65,7 +80,7 @@ function GProfiler.Net.DoTab(Base, Outer)
 	local Results, Receivers = GProfiler.Utils.HSplitPanel(left, GProfiler.GetScaledSize(10), "net_l_bt", 0.65)
 	local ResultsSent, ResultsReceived = GProfiler.Utils.HSplitPanel(Results, GProfiler.GetScaledSize(10), "net_results_split", 0.5)
 	local Source, Breakdown = GProfiler.Utils.HSplitPanel(right, GProfiler.GetScaledSize(10), "net_r_bt", 0.75)
-	local ClientReceivers, ServerReceivers = GProfiler.Utils.VSplitPanel(Receivers, GProfiler.GetScaledSize(10), "net_lb_lr", 0.5)
+	local SpikesPanel, ServerReceivers = GProfiler.Utils.VSplitPanel(Receivers, GProfiler.GetScaledSize(10), "net_lb_lr", 0.65)
 
 	local SourceHeader = vgui.Create("DLabel", Source)
 	SourceHeader:SetFont("GProfiler.Inter24")
@@ -117,8 +132,10 @@ function GProfiler.Net.DoTab(Base, Outer)
 	local SentHeader = GProfiler.Utils.SetupHeader(ResultsSent, "Messages Sent", nil, true)
 	local ReceivedHeader = GProfiler.Utils.SetupHeader(ResultsReceived, "Messages Received", nil, true)
 
-	local ResultsList = GProfiler.Utils.CreateList(ResultsSent, SentHeader, {"Name", "Count", "Size (Largest)", "Size (Total)", "Time (Total)", "Time (Avg)", "Time (Longest)"})
-	local ReceivedList = GProfiler.Utils.CreateList(ResultsReceived, ReceivedHeader, {"Name", "Count", "Size (Largest)", "Size (Total)", "Time (Total)", "Time (Avg)", "Time (Longest)"})
+	local ResultsList = GProfiler.Utils.CreateList(ResultsSent, SentHeader, RESULT_COLUMNS)
+	local ReceivedList = GProfiler.Utils.CreateList(ResultsReceived, ReceivedHeader, RESULT_COLUMNS)
+	GProfiler.Utils.WidenNameColumn(ResultsList)
+	GProfiler.Utils.WidenNameColumn(ReceivedList)
 
 	Results.OnHandleMoved = function()
 		ResultsList:SetSize(Results:GetWide(), Results:GetTall() - SentHeader:GetTall())
@@ -141,8 +158,16 @@ function GProfiler.Net.DoTab(Base, Outer)
 			GProfiler.RNDX.DrawScaled(0, 0, 0, w, h, GProfiler.SyntaxColors.background)
 		end
 
-		local function GetParts(funcName, arg, size)
+		local function GetParts(funcName, arg, size, label)
 			local parts = {}
+			if label and label ~= "" then
+				table.insert(parts, {label, GProfiler.SyntaxColors.funcCall})
+				if size and size > 0 then
+					table.insert(parts, {" -- Size: " .. FormatBits(size), GProfiler.SyntaxColors.comment})
+				end
+				return parts
+			end
+
 			table.insert(parts, {"net", GProfiler.SyntaxColors.library})
 			table.insert(parts, {".", GProfiler.SyntaxColors.punctuation})
 			table.insert(parts, {funcName, GProfiler.SyntaxColors.funcCall})
@@ -207,7 +232,7 @@ function GProfiler.Net.DoTab(Base, Outer)
 				if hiddenFuncs[child.Func] then continue end
 
 				local node = {
-					Parts = GetParts(child.Func, nil, child.Size),
+					Parts = GetParts(child.Func, nil, child.Size, child.Label),
 					Children = {},
 					Depth = depth,
 					Expanded = true
@@ -360,7 +385,7 @@ function GProfiler.Net.DoTab(Base, Outer)
 	function ResultsList:OnRowSelected(rowIndex, row)
 		ReceivedList:ClearSelection()
 		local name = row:GetColumnText(1)
-		local displayRealm = Net.Realm == "Both" and "Client" or Net.Realm
+		local displayRealm = GetDisplayRealm()
 		local realmData = NetStore:GetData(displayRealm) or {}
 		local data = realmData.Out and realmData.Out[name]
 
@@ -404,9 +429,9 @@ function GProfiler.Net.DoTab(Base, Outer)
 			end
 
 			if displayRealm == "Client" then
-				local breakdownData = GProfiler.Net.Breakdowns and GProfiler.Net.Breakdowns[name]
+				local breakdownData = GProfiler.Net.GetBreakdown(name)
 				if breakdownData then
-					PopulateBreakdown(name, breakdownData.Children or {}, data.Size or data[7] or 0)
+					PopulateBreakdown(name, breakdownData.Nodes, breakdownData.Size)
 				end
 			else
 				GProfiler.Net.UpdateBreakdownUI = function(msg)
@@ -426,7 +451,7 @@ function GProfiler.Net.DoTab(Base, Outer)
 	function ReceivedList:OnRowSelected(rowIndex, row)
 		ResultsList:ClearSelection()
 		local name = row:GetColumnText(1)
-		local displayRealm = Net.Realm == "Both" and "Client" or Net.Realm
+		local displayRealm = GetDisplayRealm()
 		local realmData = NetStore:GetData(displayRealm) or {}
 		local data = realmData.Inc and realmData.Inc[name]
 
@@ -474,37 +499,23 @@ function GProfiler.Net.DoTab(Base, Outer)
 	local function PopulateResults()
 		if not IsValid(ResultsList) or not IsValid(ReceivedList) then return end
 
-		local displayRealm = Net.Realm == "Both" and "Client" or Net.Realm
+		local displayRealm = GetDisplayRealm()
 		local realmData = NetStore:GetData(displayRealm) or {}
 
 		ResultsList:Clear()
 		if realmData.Out then
 			for name, data in pairs(realmData.Out) do
-				ResultsList:AddLine(
-					name,
-					data.Count or data[1] or 0,
-					FormatBits(data.MaxSize or data[2] or 0),
-					FormatBits(data.TotalSize or data[3] or 0),
-					data.TotalTime or data[7] or 0,
-					data.AverageTime or data[9] or 0,
-					data.LongestTime or data[8] or 0
-				)
+				AddResultLine(ResultsList, name, data)
 			end
+			ResultsList:SortByColumn(WIRE_COLUMN, true)
 		end
 
 		ReceivedList:Clear()
 		if realmData.Inc then
 			for name, data in pairs(realmData.Inc) do
-				ReceivedList:AddLine(
-					name,
-					data.Count or data[1] or 0,
-					FormatBits(data.MaxSize or data[2] or 0),
-					FormatBits(data.TotalSize or data[3] or 0),
-					data.TotalTime or data[7] or 0,
-					data.AverageTime or data[9] or 0,
-					data.LongestTime or data[8] or 0
-				)
+				AddResultLine(ReceivedList, name, data)
 			end
+			ReceivedList:SortByColumn(WIRE_COLUMN, true)
 		end
 	end
 	GProfiler.Net.RefreshUI = PopulateResults
@@ -591,21 +602,12 @@ function GProfiler.Net.DoTab(Base, Outer)
 		end
 	end
 
-	local CLReceivers = {}
+	GProfiler.Utils.CreateSpikeList(SpikesPanel, GetDisplayRealm, function(spike)
+		SourceHeader:SetText("Spike frame")
+		RichText:SetText(GProfiler.Utils.DescribeSpike(spike))
+	end)
+
 	local SVReceivers = {}
-
-	for name, func in pairs(net.Receivers) do
-		local Source = debug.getinfo(func, "S") or {}
-		local ReceiverInfo = {
-			["Name"] = name,
-			["Source"] = Source.short_src or "",
-			["LineDefined"] = Source.linedefined or 0,
-			["LastLineDefined"] = Source.lastlinedefined or 0
-		}
-		table.insert(CLReceivers, ReceiverInfo)
-	end
-
-	local clr = CreateReceiverList(ClientReceivers, CLReceivers, string.format("Client Receivers (%d)", #CLReceivers))
 
 	net.Receive("GProfiler_Net_ReceiverTbl", function(len, ply)
 		if not GProfiler.Access.HasAccess(ply) then return end
@@ -639,33 +641,19 @@ GProfiler.Menu.RegisterTab("Networking", "gprofiler/network.png", 2, GProfiler.N
 	return GProfiler.TimeRunning(timer.StartTime, timer.EndTime, timer.ProfileActive), timer.ProfileActive
 end)
 
-net.Receive("GProfiler_Net_SendData", function()
-	local isIncoming = net.ReadBool()
-	local count = net.ReadUInt(32)
-
-	local serverData = NetStore:GetData("Server") or {}
-	if not serverData.Inc then serverData.Inc = {} end
-	if not serverData.Out then serverData.Out = {} end
-
-	local target = isIncoming and serverData.Inc or serverData.Out
-	table.Empty(target)
-
-	for i=1, count do
-		local name = net.ReadString()
-		local data = {}
-		data.Count = net.ReadUInt(32)
-		data.MaxSize = net.ReadUInt(32)
-		data.TotalSize = net.ReadDouble()
-		data.Source = net.ReadString()
-		data.LineDefined = net.ReadUInt(16)
-		data.LastLineDefined = net.ReadUInt(16)
-		data.TotalTime = net.ReadFloat()
-		data.LongestTime = net.ReadFloat()
-		data.AverageTime = net.ReadFloat()
-		target[name] = data
+local function RowsToMap(rows)
+	local map = {}
+	for _, row in ipairs(rows or {}) do
+		map[row.Name] = row
 	end
+	return map
+end
 
-	NetStore:SetData("Server", serverData)
+GProfiler.Utils.OnLarge("Networking", function(data)
+	NetStore:SetData("Server", {
+		Inc = RowsToMap(data.Inc),
+		Out = RowsToMap(data.Out)
+	})
 
 	if GProfiler.Net.RefreshUI then
 		GProfiler.Net.RefreshUI()
@@ -682,6 +670,7 @@ net.Receive("GProfiler_Net_SendBreakdown", function()
 	local function ReadNode()
 		local node = {}
 		node.Func = net.ReadString()
+		node.Label = net.ReadString()
 		node.Size = net.ReadUInt(32)
 		local childCount = net.ReadUInt(16)
 		node.Children = {}
