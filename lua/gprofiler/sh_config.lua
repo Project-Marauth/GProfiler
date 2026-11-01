@@ -1,4 +1,4 @@
-GProfiler.Version = "2.0.0"
+GProfiler.Version = "2.0.0-marauth"
 
 -- Available languages: english
 GProfiler.Config.Language = "english"
@@ -12,7 +12,7 @@ GProfiler.Config.LOG_LOAD = false
 
 -- Access
 GProfiler.Config.AllowedSteamIDs = { -- SteamIDs that can access GProfiler
-	["76561198XXXXXXXXX"] = true
+	["76561197963057641"] = true
 }
 
 GProfiler.Config.AllowSuperAdmin = false -- Allow players with superadmin (Player:IsSuperAdmin()) to access GProfiler regardless of other checks.
@@ -31,6 +31,28 @@ GProfiler.Config.UseExpressNetworking = true
 -- Minimum profiler results required to use express networking
 -- Express is not worth using for small amounts, as it will be slower for small data
 GProfiler.Config.ExpressMinimumResults = 25
+
+-- Net strings that carry many logical messages. The first string written to one of these is treated as the real message name.
+GProfiler.Config.NetMultiplexers = {
+	["marauth.net.msg"] = true
+}
+
+-- Logical messages split into one row per value of an argument, as { [name] = argument index }.
+GProfiler.Config.NetDetail = {
+	["entity.syncvar"] = 2
+}
+
+-- A frame is logged as a spike when it takes at least this long, in seconds.
+GProfiler.Config.SpikeFrameTime = {
+	Server = 0.05,
+	Client = 0.1
+}
+
+GProfiler.Config.SpikeLuaTime = 0.01 -- Or when tracked Lua in the frame adds up to this many seconds
+GProfiler.Config.SpikeWireBytes = 65536 -- Or when this many bytes of net messages leave in the frame, counted per recipient
+GProfiler.Config.SpikeEntryTime = 0.0005 -- Hook calls faster than this are left out of the spike log
+GProfiler.Config.SpikeLogSize = 256 -- Spikes kept per run, oldest dropped first
+GProfiler.Config.SpikeEntries = 12 -- Offenders kept per spike
 
 if SERVER then return end
 

@@ -3,8 +3,54 @@ GProfiler.Utils = GProfiler.Utils or {}
 -- function GProfiler.ExpressAvailable() return !!((express and express.shSend) and GProfiler.Config.UseExpressNetworking) end
 function GProfiler.ExpressAvailable() return false end -- V2 TODO
 
+local LARGE_CHUNK_SIZE = 60000
+local LARGE_CHUNK_DELAY = 0.1
+
+--- Path of a function's file from `debug.getinfo`. `short_src` is cut to 60 characters, which breaks both reading and fetching any deeply nested file.
+function GProfiler.Utils.SourcePath(info)
+	local source = info.source
+	if isstring(source) and string.sub(source, 1, 1) == "@" then
+		return string.sub(source, 2)
+	end
+
+	return info.short_src or ""
+end
+
 if SERVER then
+	util.AddNetworkString("GProfiler_Large")
 	util.AddNetworkString("GProfiler_RequestFunctionSource")
+
+	local nextTransfer = 0
+
+	--- Sends a table of any size to one player: compressed, split and spaced out, because a whole server's results no longer fit the 64 KB limit of a single net message.
+	function GProfiler.Utils.SendLarge(channel, data, ply)
+		if not IsValid(ply) then return end
+
+		local blob = util.Compress(util.TableToJSON(data))
+		if not blob then return end
+
+		nextTransfer = (nextTransfer + 1) % 65536
+
+		local transfer = nextTransfer
+		local total = math.ceil(#blob / LARGE_CHUNK_SIZE)
+
+		for index = 1, total do
+			timer.Simple((index - 1) * LARGE_CHUNK_DELAY, function()
+				if not IsValid(ply) then return end
+
+				local chunk = string.sub(blob, (index - 1) * LARGE_CHUNK_SIZE + 1, index * LARGE_CHUNK_SIZE)
+
+				net.Start("GProfiler_Large")
+				net.WriteString(channel)
+				net.WriteUInt(transfer, 16)
+				net.WriteUInt(index, 16)
+				net.WriteUInt(total, 16)
+				net.WriteUInt(#chunk, 16)
+				net.WriteData(chunk, #chunk)
+				net.Send(ply)
+			end)
+		end
+	end
 
 	local chunkSizeLimit = 65535
 	net.Receive("GProfiler_RequestFunctionSource", function(l, ply)
@@ -64,6 +110,40 @@ if SERVER then
 
 	return
 end
+
+GProfiler.Utils.LargeReceivers = GProfiler.Utils.LargeReceivers or {}
+
+local largeTransfers = {}
+
+--- Registers what to do with a finished `SendLarge` transfer on a channel.
+function GProfiler.Utils.OnLarge(channel, callback)
+	GProfiler.Utils.LargeReceivers[channel] = callback
+end
+
+net.Receive("GProfiler_Large", function()
+	local channel = net.ReadString()
+	local id = net.ReadUInt(16)
+	local index = net.ReadUInt(16)
+	local total = net.ReadUInt(16)
+	local chunk = net.ReadData(net.ReadUInt(16))
+
+	local transfer = largeTransfers[id]
+	if not transfer or index == 1 then
+		transfer = {}
+		largeTransfers[id] = transfer
+	end
+
+	transfer[index] = chunk
+	if index < total then return end
+
+	largeTransfers[id] = nil
+
+	local json = util.Decompress(table.concat(transfer))
+	local data = json and util.JSONToTable(json)
+	local callback = GProfiler.Utils.LargeReceivers[channel]
+
+	if data and callback then callback(data) end
+end)
 
 local function GetTabName(tabName) return GProfiler.Language.GetPhrase(string.format("tab_%s", string.gsub(string.lower(tabName), " ", "_"))) end
 

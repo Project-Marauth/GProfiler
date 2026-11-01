@@ -4,6 +4,112 @@ GProfiler.Profilers.Registered = GProfiler.Profilers.Registered or {}
 local Profilers = GProfiler.Profilers
 local SysTime = SysTime
 
+GProfiler.Spikes = GProfiler.Spikes or { Owners = {}, Log = {}, Data = {} }
+
+local Spikes = GProfiler.Spikes
+Spikes.HookName = "GProfiler.Spikes"
+
+local function ResetFrame()
+	Spikes.Entries = {}
+	Spikes.Bits = 0
+	Spikes.Lua = 0
+end
+
+--- Adds work to the running frame. `kind` is "hook", "in" or "out". Nothing is kept once the frame ends unless it turns out to be a spike.
+function Spikes.Add(kind, name, seconds, bits)
+	if not Spikes.Running then return end
+
+	local key = kind .. " " .. name
+	local entry = Spikes.Entries[key]
+	if not entry then
+		entry = { Kind = kind, Name = name, Count = 0, Time = 0, Bits = 0 }
+		Spikes.Entries[key] = entry
+	end
+
+	entry.Count = entry.Count + 1
+	entry.Time = entry.Time + seconds
+	entry.Bits = entry.Bits + bits
+
+	Spikes.Lua = Spikes.Lua + seconds
+	Spikes.Bits = Spikes.Bits + bits
+end
+
+local function RecordSpike(now, gap)
+	local entries = {}
+	for _, entry in pairs(Spikes.Entries) do
+		entries[#entries + 1] = entry
+	end
+
+	table.sort(entries, function(a, b)
+		if a.Time == b.Time then return a.Bits > b.Bits end
+		return a.Time > b.Time
+	end)
+
+	for index = #entries, GProfiler.Config.SpikeEntries + 1, -1 do
+		entries[index] = nil
+	end
+
+	table.insert(Spikes.Log, {
+		At = now - Spikes.StartTime,
+		Gap = gap,
+		Lua = Spikes.Lua,
+		Bits = Spikes.Bits,
+		Entries = entries
+	})
+
+	if #Spikes.Log > GProfiler.Config.SpikeLogSize then
+		table.remove(Spikes.Log, 1)
+	end
+end
+
+local function OnFrame()
+	local now = SysTime()
+	local gap = now - Spikes.LastFrame
+	Spikes.LastFrame = now
+
+	local config = GProfiler.Config
+	local frameLimit = config.SpikeFrameTime[SERVER and "Server" or "Client"]
+
+	if gap >= frameLimit or Spikes.Lua >= config.SpikeLuaTime or Spikes.Bits >= config.SpikeWireBytes * 8 then
+		RecordSpike(now, gap)
+	end
+
+	ResetFrame()
+end
+
+--- Registers a profiler as wanting spike logging. The first one in clears the previous run.
+function Spikes.Start(owner)
+	if not next(Spikes.Owners) then
+		Spikes.Log = {}
+		Spikes.StartTime = SysTime()
+		Spikes.LastFrame = Spikes.StartTime
+		Spikes.Running = true
+		ResetFrame()
+		hook.Add(SERVER and "Tick" or "Think", Spikes.HookName, OnFrame)
+	end
+
+	Spikes.Owners[owner] = true
+end
+
+--- Releases a profiler's claim. Logging stops once no profiler is left, and the log stays readable for the report.
+function Spikes.Stop(owner)
+	Spikes.Owners[owner] = nil
+	if next(Spikes.Owners) then return end
+
+	Spikes.Running = false
+	hook.Remove(SERVER and "Tick" or "Think", Spikes.HookName)
+
+	if CLIENT then
+		Spikes.Data.Client = Spikes.Log
+		if Spikes.RefreshUI then Spikes.RefreshUI() end
+	end
+end
+
+--- Sends the spike log to a player, as far as it has got.
+function Spikes.Send(ply)
+	GProfiler.Utils.SendLarge("Spikes", Spikes.Log, ply)
+end
+
 if SERVER then
 	util.AddNetworkString("GProfiler.Profiler.Status")
 	util.AddNetworkString("GProfiler.Profiler.Toggle")
@@ -77,9 +183,10 @@ end
 
 function Profilers.Register(name, opts)
 	opts = opts or {}
+	local existing = Profilers.Registered[name]
 	local profiler = {
 		Name = name,
-		Store = CreateStore(name, opts),
+		Store = existing and existing.Store or CreateStore(name, opts),
 		Realms = opts.Realms or { "Client", "Server" },
 		ServerOnly = opts.ServerOnly or false,
 		OnStart = opts.OnStart,
